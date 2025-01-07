@@ -8,6 +8,7 @@
 using namespace html;
 
 sparser::sparser(const std::string& textref) {
+    EOS = false;
     text = &textref;
     start = 0;
     len = 1;
@@ -38,8 +39,11 @@ const char& sparser::back() const {
     return text->at(start + len - 1);
 }
 
-std::pair<const char*, int> sparser::window() const {
-    return {text->c_str() + start, len};
+const char* sparser::windowptr() const {
+    return text->c_str() + start;
+}
+const int& sparser::windowlen() const {
+    return len;
 }
 
 bool sparser::endOfString() const {
@@ -193,7 +197,94 @@ const ComponentNode* HTMLParser::getRoot() const {
 
 HTMLParser::HTMLParser(const std::string& input) {
     sparser sp(input);
+    end_condition isnt_alnum = [] (const char& c) { return !bool(std::isalnum(c)); };
+    end_condition end_of_tag = [] (const char& c) { return c == '>'; };
 
+    std::forward_list<ComponentNode*> stack;
+    for (sp; !sp.endOfString(); sp.shift()) {
+        
+        // Encountered tag
+        if (sp.back() == '<') {
+            sp.incr();
+            sp.append_until(isnt_alnum);
+            
+            // Is a closing tag, </...>
+            if (sp.getWindow()[1] == '/') {
+                sp.incr();
+                sp.append_until(isnt_alnum);
+                stack.front()->accessRawText() += sp;
+                if (++stack.begin() == stack.end()) stack.front()->lock();
+                else {
+                    std::thread asyncLock(&ComponentNode::lock, stack.front());
+                    asyncLock.detach();
+                }
+                stack.pop_front();
+                sp.flatten();
+                continue;
+            }
+
+            if (sp.getWindow()[1] == '!') {
+                sp.incr();
+                sp.append_until(end_of_tag);
+                sp.flatten();
+                continue;
+            }
+
+            // sp should look like <tag> or <tag , so we cutoff start and end and check if void elem
+            std::string tag(++sp.getWindow().cbegin(), std::prev(sp.getWindow().cend()));
+            if (void_elements.count(tag)) {
+                sp.append_until(end_of_tag);
+                ComponentNode* newNode = new ComponentNode();
+                newNode->accessRawText() = sp;
+                newNode->accessIsVoid() = true;
+                newNode->accessParent() = stack.front();
+                // we only care to wait on the lock to finish iff lock is the root since we need the root to access all other nodes, otherwise they can be done asynchronously
+                if (++stack.begin() == stack.end()) newNode->lock();
+                else {
+                    std::thread asyncLock(&ComponentNode::lock, newNode);
+                    asyncLock.detach();
+                }
+                stack.front()->accessChildren().push_back(newNode);
+                sp.flatten();
+                continue;
+            }
+
+            // Style and Script tag text have A LOT of bad characters that can cause us to throw errors
+            // since they're garaunteed to have no children and don't have any useful information, we just skip them entirely
+            if (tag == "style" || tag == "script") {
+                sp.flatten();
+                sp.incr();
+                // sp should be of size two, shift until sp == "</"
+                std::string kill("</");
+                while (!sp.compLast(kill)) {
+                    sp.incr();
+                }
+                sp.incr();
+                sp.append_until(end_of_tag);
+                sp.flatten();
+                continue;
+            }
+
+            // is an opening tag, push to stack
+            ComponentNode* newNode = new ComponentNode();
+            newNode->accessRawText() += sp;
+            sp.flatten();
+            ComponentNode* push = newNode;
+            if (stack.empty()) root = newNode;
+            else {
+                newNode->accessParent() = stack.front();
+                stack.front()->accessChildren().push_back(newNode);
+            }
+            stack.push_front(push);
+            continue;
+        }
+
+        if (stack.empty()) continue;
+        if (sp.back() != ' ' && std::isspace(sp.back())) continue;
+
+        stack.front()->accessRawText().push_back(sp.back());
+
+    }
 }
 
 // DESTRUCTORS

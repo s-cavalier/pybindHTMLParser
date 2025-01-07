@@ -80,9 +80,13 @@ namespace html {
         void incr();
         void shift();
         void flatten();
+        void append_until(end_condition kill);
+        void compLast(const string& comp);
         const char& back() const;
-        std::pair<const char*, int> window() const;
+        const char* windowptr() const;
+        const int& windowlen() const;
         bool endOfString() const;
+        operator std::string();
     };
 
     class HTMLParser {
